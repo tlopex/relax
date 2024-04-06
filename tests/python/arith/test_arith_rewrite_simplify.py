@@ -51,15 +51,17 @@ class TestCase:
 
 
 class BaseCompare:
+    extensions = tvm.arith.Extension.NoExtensions
+
     def test_simplify(self, test_case):
         analyzer = tvm.arith.Analyzer()
+        analyzer.enabled_extensions = self.extensions
 
         if inspect.isclass(test_case.expected) and issubclass(test_case.expected, Exception):
             with pytest.raises(test_case.expected):
                 with analyzer.constraint_scope(test_case.constraint):
                     analyzer.rewrite_simplify(test_case.before)
         else:
-
             with analyzer.constraint_scope(test_case.constraint):
                 after = analyzer.rewrite_simplify(test_case.before)
 
@@ -73,6 +75,7 @@ class BaseCompare:
 
 class TestVector(BaseCompare):
     x, y, z = te.var("x"), te.var("y"), te.var("z")
+    x64 = te.var("x", dtype="int64")
     vx = te.var("vx", dtype="int32x2")
     vc = te.var("vc", dtype="uint1")
     test_case = tvm.testing.parameter(
@@ -80,8 +83,29 @@ class TestVector(BaseCompare):
         TestCase(tvm.tir.Ramp(x, 1, 4) + tvm.tir.Ramp(y, 2, 4), tvm.tir.Ramp(x + y, 3, 4)),
         TestCase(tvm.tir.Ramp(x, 1, 2) + y, tvm.tir.Ramp(x + y, 1, 2)),
         TestCase(y + tvm.tir.Ramp(x, 1, 2), tvm.tir.Ramp(y + x, 1, 2)),
+        TestCase(
+            tvm.tir.Ramp(x, 1, tir.vscale() * 4) + tvm.tir.Ramp(y, 2, tir.vscale() * 4),
+            tvm.tir.Ramp(x + y, 3, tir.vscale() * 4),
+        ),
         TestCase(y.astype("int32x2") + x.astype("int32x2"), (y + x).astype("int32x2")),
         TestCase(tvm.tir.Broadcast(0, 4) + y, tvm.tir.Broadcast(y, 4)),
+        # int64 lanes
+        TestCase(
+            tvm.tir.Broadcast(x, 4) + tvm.tir.Ramp(0, 1, tvm.tir.IntImm(dtype="int64", value=4)),
+            tvm.tir.Ramp(x, 1, 4),
+        ),
+        TestCase(
+            tvm.tir.Broadcast(x, tvm.tir.IntImm(dtype="int64", value=4)) + tvm.tir.Ramp(0, 1, 4),
+            tvm.tir.Ramp(x, 1, 4),
+        ),
+        # int64 iterators with int32 lanes
+        TestCase(
+            tvm.tir.Broadcast(x64, 4) + tvm.tir.Ramp(tvm.tir.IntImm(dtype="int64", value=0), 1, 4),
+            tvm.tir.Ramp(x64, 1, 4),
+        ),
+        TestCase(
+            tvm.tir.Broadcast(0, tir.vscale() * 8) + y, tvm.tir.Broadcast(y, tir.vscale() * 8)
+        ),
         TestCase(
             tvm.tir.Ramp(x, 1, 4).astype("float32x4") + tvm.tir.Broadcast(0.0, 4),
             tvm.tir.Ramp(x, 1, 4).astype("float32x4"),
@@ -101,20 +125,37 @@ class TestVector(BaseCompare):
         # trunc div
         TestCase(tdiv(y.astype("int32x2"), x.astype("int32x2")), tdiv(y, x).astype("int32x2")),
         TestCase(tdiv(tvm.tir.Ramp(x, 4, 4), 2), tvm.tir.Ramp(tdiv(x, 2), 2, 4)),
+        TestCase(
+            tdiv(tvm.tir.Ramp(x, 4, tir.vscale() * 5), 2),
+            tvm.tir.Ramp(tdiv(x, 2), 2, tir.vscale() * 5),
+        ),
         TestCase(tdiv(tvm.tir.Ramp(x * 8 + 1, 1, 4), 8), x.astype("int32x4"), x >= 0),
         TestCase(tdiv(tvm.tir.Ramp(x * 8 + 15, 1, 4), 8), tdiv(tvm.tir.Ramp(x * 8 + 15, 1, 4), 8)),
         # trunc mod
         TestCase(tmod(y.astype("int32x2"), x.astype("int32x2")), tmod(y, x).astype("int32x2")),
         TestCase(tmod(tvm.tir.Ramp(x, 4, 4), 2), tvm.tir.Broadcast(tmod(x, 2), 4)),
         TestCase(tmod(tvm.tir.Ramp(x * 8 + 1, 1, 4), 8), tvm.tir.Ramp(1, 1, 4), x >= 0),
+        TestCase(
+            tmod(tvm.tir.Ramp(x * 8 + 1, 1, tir.vscale() * 4), 8),
+            tmod(tvm.tir.Ramp(1, 1, tir.vscale() * 4), 8),
+            x >= 0,
+        ),
         TestCase(tmod(tvm.tir.Ramp(x * 8 + 1, 15, 4), 8), tmod(tvm.tir.Ramp(1, 15, 4), 8), x >= 0),
         # floor div
         TestCase(fld(y.astype("int32x2"), x.astype("int32x2")), fld(y, x).astype("int32x2")),
         TestCase(fld(tvm.tir.Ramp(x, 4, 4), 2), tvm.tir.Ramp(fld(x, 2), 2, 4)),
+        TestCase(
+            fld(tvm.tir.Ramp(x, 4, tir.vscale() * 4), 2),
+            tvm.tir.Ramp(fld(x, 2), 2, tir.vscale() * 4),
+        ),
         TestCase(fld(tvm.tir.Ramp(x * 8 + 1, 1, 4), 8), (x).astype("int32x4")),
         TestCase(fld(tvm.tir.Ramp(x * 8 + 15, 1, 4), 8), fld(tvm.tir.Ramp(x * 8 + 15, 1, 4), 8)),
         TestCase(
             fld(tvm.tir.Ramp(x, 8, 5), tvm.tir.Broadcast(4, 5)), tvm.tir.Ramp(fld(x, 4), 2, 5)
+        ),
+        TestCase(
+            fld(tvm.tir.Ramp(x, 8, tir.vscale() * 4), tvm.tir.Broadcast(4, tir.vscale() * 4)),
+            tvm.tir.Ramp(fld(x, 4), 2, tir.vscale() * 4),
         ),
         TestCase(
             fld(tvm.tir.Ramp(flm(x * 4, 256), 1, 4), tvm.tir.Broadcast(8, 4)),
@@ -126,6 +167,10 @@ class TestVector(BaseCompare):
         ),
         TestCase(
             fld(tvm.tir.Ramp(x * 8, 1, 4), tvm.tir.Broadcast(4, 4)), tvm.tir.Broadcast(x * 2, 4)
+        ),
+        TestCase(
+            fld(tvm.tir.Ramp(x * 8, 1, tir.vscale() * 4), tvm.tir.Broadcast(4, tir.vscale() * 4)),
+            fld(tvm.tir.Ramp(x * 8, 1, tir.vscale() * 4), tvm.tir.Broadcast(4, tir.vscale() * 4)),
         ),
         TestCase(
             fld(tvm.tir.Ramp(x * 8, 3, 4), tvm.tir.Broadcast(4, 4)),
@@ -158,7 +203,15 @@ class TestVector(BaseCompare):
         # floor mod
         TestCase(flm(y.astype("int32x2"), x.astype("int32x2")), flm(y, x).astype("int32x2")),
         TestCase(flm(tvm.tir.Ramp(x, 4, 4), 2), tvm.tir.Broadcast(flm(x, 2), 4)),
+        TestCase(
+            flm(tvm.tir.Ramp(x, 4, tir.vscale() * 8), 2),
+            tvm.tir.Broadcast(flm(x, 2), tir.vscale() * 8),
+        ),
         TestCase(flm(tvm.tir.Ramp(x * 8 + 1, 1, 4), 8), tvm.tir.Ramp(1, 1, 4)),
+        TestCase(
+            flm(tvm.tir.Ramp(x * 8 + 1, 1, tir.vscale() * 4), 8),
+            flm(tvm.tir.Ramp(1, 1, tir.vscale() * 4), 8),
+        ),
         TestCase(flm(tvm.tir.Ramp(x * 8 + 1, 15, 4), 8), flm(tvm.tir.Ramp(1, 15, 4), 8)),
         TestCase(
             flm(tvm.tir.Ramp(x, 8, 4), tvm.tir.Broadcast(4, 4)), tvm.tir.Broadcast(flm(x, 4), 4)
@@ -947,6 +1000,39 @@ class TestComparisons(BaseCompare):
         TestCase(y * y >= 0, tvm.tir.const(1, "bool"), y <= 0),
         TestCase(x * 6 <= -3, tvm.tir.const(0, "bool"), x >= 0),
         TestCase(tmod(y - 1, 3) == 0, tmod(y + (-1), 3) == 0),
+    )
+
+
+class TestComparisonOfProductAndSum(BaseCompare):
+    extensions = tvm.arith.Extension.ComparisonOfProductAndSum
+
+    x, y, z = te.var("x"), te.var("y"), te.var("z")
+
+    test_case = tvm.testing.parameter(
+        # Special inequality cases
+        TestCase(
+            x * y < (x + y) * 2048,
+            tvm.tir.const(1, "bool"),
+            [x > 0, y > 0, x < 2048],
+        ),
+        TestCase(
+            x * y < (x + y) * 2048,
+            tvm.tir.const(1, "bool"),
+            [x > 0, y > 0, x < 4096, y < 4096],
+        ),
+        TestCase(
+            # Both sides are divisible by 8192
+            x * y * 8192 < (y + x) * 16777216,
+            tvm.tir.const(1, "bool"),
+            [x > 0, y > 0, x < 4096, y < 4096],
+        ),
+        TestCase(
+            # The two sides have co-prime factors, but the bounds are
+            # still sufficient to prove the inequality.
+            x * y * 59 < (y + x) * 176128,
+            tvm.tir.const(1, "bool"),
+            [x > 0, y > 0, x < 4096, y < 4096],
+        ),
     )
 
 
